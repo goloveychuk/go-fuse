@@ -29,6 +29,8 @@ type LoopbackRoot struct {
 	// to a LOOKUP/CREATE/MKDIR/MKNOD opcode. If not set, use a
 	// LoopbackNode.
 	NewNode func(rootData *LoopbackRoot, parent *Inode, name string, st *syscall.Stat_t) InodeEmbedder
+
+	RootNode *Inode
 }
 
 func (r *LoopbackRoot) newNode(parent *Inode, name string, st *syscall.Stat_t) InodeEmbedder {
@@ -189,7 +191,7 @@ func (n *LoopbackNode) Rename(ctx context.Context, name string, newParent InodeE
 	}
 
 	p1 := filepath.Join(n.path(), name)
-	p2 := filepath.Join(n.RootData.Path, newParent.EmbeddedInode().Path(nil), newName)
+	p2 := filepath.Join(n.RootData.Path, newParent.EmbeddedInode().Path(n.Root()), newName)
 
 	err := syscall.Rename(p1, p2)
 	return ToErrno(err)
@@ -225,7 +227,7 @@ func (n *LoopbackNode) renameExchange(name string, newparent InodeEmbedder, newN
 		return ToErrno(err)
 	}
 	defer syscall.Close(fd1)
-	p2 := filepath.Join(n.RootData.Path, newparent.EmbeddedInode().Path(nil))
+	p2 := filepath.Join(n.RootData.Path, newparent.EmbeddedInode().Path(n.Root()))
 	fd2, err := syscall.Open(p2, syscall.O_DIRECTORY, 0)
 	defer syscall.Close(fd2)
 	if err != nil {
@@ -239,7 +241,7 @@ func (n *LoopbackNode) renameExchange(name string, newparent InodeEmbedder, newN
 
 	// Double check that nodes didn't change from under us.
 	inode := &n.Inode
-	if inode.Root() != inode && inode.StableAttr().Ino != n.RootData.idFromStat(&st).Ino {
+	if n.Root() != inode && inode.StableAttr().Ino != n.RootData.idFromStat(&st).Ino {
 		return syscall.EBUSY
 	}
 	if err := syscall.Fstat(fd2, &st); err != nil {
@@ -280,7 +282,7 @@ var _ = (NodeLinker)((*LoopbackNode)(nil))
 func (n *LoopbackNode) Link(ctx context.Context, target InodeEmbedder, name string, out *fuse.EntryOut) (*Inode, syscall.Errno) {
 
 	p := filepath.Join(n.path(), name)
-	err := syscall.Link(filepath.Join(n.RootData.Path, target.EmbeddedInode().Path(nil)), p)
+	err := syscall.Link(filepath.Join(n.RootData.Path, target.EmbeddedInode().Path(n.Root())), p)
 	if err != nil {
 		return nil, ToErrno(err)
 	}
@@ -345,6 +347,13 @@ func (n *LoopbackNode) Readdir(ctx context.Context) (DirStream, syscall.Errno) {
 }
 
 var _ = (NodeGetattrer)((*LoopbackNode)(nil))
+
+func (n *LoopbackNode) Root() *Inode {
+	if n.RootData.RootNode != nil {
+		return n.RootData.RootNode
+	}
+	return n.Inode.Root()
+}
 
 func (n *LoopbackNode) Getattr(ctx context.Context, f FileHandle, out *fuse.AttrOut) syscall.Errno {
 	if f != nil {
